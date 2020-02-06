@@ -215,7 +215,7 @@ class Solver(object):
             return
 
         module.forward_handle.remove()
-
+        # TODO Consider progressively generating bigger and bigger noise, as the model becomes better, increase the requirement of distinguishing noise from input
         X = X[0] + (0.1**0.5)*torch.randn(X[0].size(), device=self.device) # TODO think about how to generate this noise so that it is properly scaled to X, consider to use VAE for it
         X = module(X)
 
