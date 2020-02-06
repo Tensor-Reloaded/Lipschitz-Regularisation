@@ -208,6 +208,66 @@ class Solver(object):
         self.batch_plot_idx += 1
         return self.batch_plot_idx - 1
 
+
+    def forward_lipschitz_loss_hook_fn(self,module,X,y):
+        if not self.model.training  or not self.args.lipschitz_regularization:
+            return
+
+        module.forward_handle.remove()
+
+        X = X[0]
+        shuffled_idxs = torch.randperm(y.size(0), device=self.device, dtype=torch.long)
+        shuffled_idxs = shuffled_idxs[:y.size(0)-y.size(0) % self.args.lipschitz_k_inputs]
+        mini_batches_idxs = shuffled_idxs.split(y.size(0) // self.args.lipschitz_k_inputs)
+
+        to_sum_groups = []
+        to_sum_targets = []
+        for mbi in mini_batches_idxs:
+            to_sum_groups.append(X[mbi].unsqueeze(0))
+            to_sum_targets.append(y[mbi].unsqueeze(0))
+
+        k_weights = torch.full((1,self.args.lipschitz_k_inputs),1/self.args.lipschitz_k_inputs, device=self.device)
+        data = (torch.cat(to_sum_groups, dim=0).T).T.sum(0)
+        data = module(data)
+        targets = (torch.cat(to_sum_targets, dim=0).T).T.sum(0)
+
+        if self.args.distance_function == "cosine_loss":
+            if self.lipschitz_loss is None:
+                self.lipschitz_loss = F.cosine_embedding_loss(data,targets,self.aux_y)
+            else:
+                self.lipschitz_loss.add(F.cosine_embedding_loss(data,targets,self.aux_y))
+        else:
+            print("lipschitz distance function not implemented")
+            exit()
+        
+        module.forward_handle = module.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
+
+    def add_lipschitz_regularization(self):
+        self.aux_y = torch.ones((1), device=self.device) * (-1)
+        if self.args.level == "model":
+            self.model.forward_handle = self.model.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
+
+        elif self.args.level == "block":
+            if "PreResNet" in self.args.model:
+                for name, module in self.model.named_modules():
+                    if re.match(r"^layer[0-9]\.[0-9]+$", name):
+                        module.forward_handle = module.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
+
+        elif self.args.level == "layer":
+            modules = []
+            def remove_sequential(network, modules):
+                for layer in network.children():
+                    if len(list(layer.children())) > 0:
+                        remove_sequential(layer,modules)
+                    if len(list(layer.children())) == 0:
+                        modules.append(layer)
+            remove_sequential(self.model,modules)
+
+
+            for i,module in enumerate(modules):
+                module.forward_handle = module.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
+
+
     def train(self):
         print("train:")
         self.model.train()
@@ -219,8 +279,13 @@ class Solver(object):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
 
+            self.lipschitz_loss = None
             output = self.model(data)
             loss = self.criterion(output, target)
+            
+            if self.args.lipschitz_regularization:
+                loss += self.lipschitz_loss * self.args.lipschitz_regularization_factor
+            
             if self.args.half:
                 with amp.scale_loss(loss, self.optimizer) as scaled_loss:
                     scaled_loss.backward()
@@ -228,7 +293,10 @@ class Solver(object):
                 loss.backward()
             self.optimizer.step()
             total_loss += loss.item()
-            self.writer.add_scalar("Train/Batch Loss", loss.item(), self.get_batch_plot_idx())
+
+            batch_idx = self.get_batch_plot_idx()
+            self.writer.add_scalar("Train/Batch Loss", loss.item(), batch_idx)
+            self.writer.add_scalar("Train/Lipschitz Batch Loss", self.lipschitz_loss.item(), batch_idx)
 
             prediction = torch.max(output, 1)
             total += target.size(0)
@@ -282,6 +350,9 @@ class Solver(object):
             reset_seed(self.args.seed)
         self.load_data()
         self.load_model()
+
+        if self.args.lipschitz_regularization:
+            self.add_lipschitz_regularization()
 
         best_accuracy = 0
         try:
