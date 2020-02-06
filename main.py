@@ -4,6 +4,7 @@ import pprint
 import argparse
 import pickle
 import os
+import re
 from shutil import copyfile
 from yaml import load, dump
 
@@ -215,27 +216,19 @@ class Solver(object):
 
         module.forward_handle.remove()
 
-        X = X[0]
-        shuffled_idxs = torch.randperm(y.size(0), device=self.device, dtype=torch.long)
-        shuffled_idxs = shuffled_idxs[:y.size(0)-y.size(0) % self.args.lipschitz_k_inputs]
-        mini_batches_idxs = shuffled_idxs.split(y.size(0) // self.args.lipschitz_k_inputs)
-
-        to_sum_groups = []
-        to_sum_targets = []
-        for mbi in mini_batches_idxs:
-            to_sum_groups.append(X[mbi].unsqueeze(0))
-            to_sum_targets.append(y[mbi].unsqueeze(0))
-
-        k_weights = torch.full((1,self.args.lipschitz_k_inputs),1/self.args.lipschitz_k_inputs, device=self.device)
-        data = (torch.cat(to_sum_groups, dim=0).T).T.sum(0)
-        data = module(data)
-        targets = (torch.cat(to_sum_targets, dim=0).T).T.sum(0)
+        X = X[0] + (0.1**0.5)*torch.randn(X[0].size(), device=self.device) # TODO think about how to generate this noise so that it is properly scaled to X, consider to use VAE for it
+        X = module(X)
 
         if self.args.distance_function == "cosine_loss":
             if self.lipschitz_loss is None:
-                self.lipschitz_loss = F.cosine_embedding_loss(data,targets,self.aux_y)
+                self.lipschitz_loss = F.cosine_embedding_loss(X,y,self.aux_y)
             else:
-                self.lipschitz_loss.add(F.cosine_embedding_loss(data,targets,self.aux_y))
+                self.lipschitz_loss.add(F.cosine_embedding_loss(X,y,self.aux_y))
+        elif self.args.distance_function == "l2":
+            if self.lipschitz_loss is None:
+                self.lipschitz_loss = torch.dist(X,y,p=2)
+            else:
+                self.lipschitz_loss.add(torch.dist(X,y,p=2))
         else:
             print("lipschitz distance function not implemented")
             exit()
