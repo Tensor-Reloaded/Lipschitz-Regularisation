@@ -213,22 +213,27 @@ class Solver(object):
     def forward_lipschitz_loss_hook_fn(self,module,X,y):
         if not self.model.training  or not self.args.lipschitz_regularization:
             return
-
+        module.eval()
+        
         module.forward_handle.remove()
         # TODO Consider progressively generating bigger and bigger noise, as the model becomes better, increase the requirement of distinguishing noise from input
-        X = X[0] + (0.1**0.5)*torch.randn(X[0].size(), device=self.device) # TODO think about how to generate this noise so that it is properly scaled to X, consider to use VAE for it
+
+        X = X[0]
+        y = module(X)
+        noise = self.args.lipschitz_noise_factor * torch.std(X, dim=0) * torch.randn(X.size(), device=self.device) 
+        X = X + noise  # TODO think about how to generate this noise so that it is properly scaled to X, consider to use VAE for it
         X = module(X)
 
         if self.args.distance_function == "cosine_loss":
             if self.lipschitz_loss is None:
                 self.lipschitz_loss = F.cosine_embedding_loss(X,y,self.aux_y)
             else:
-                self.lipschitz_loss.add(F.cosine_embedding_loss(X,y,self.aux_y))
+                self.lipschitz_loss += F.cosine_embedding_loss(X,y,self.aux_y)
         elif self.args.distance_function == "l2":
             if self.lipschitz_loss is None:
                 self.lipschitz_loss = torch.dist(X,y,p=2)
             else:
-                self.lipschitz_loss.add(torch.dist(X,y,p=2))
+                self.lipschitz_loss += torch.dist(X,y,p=2)
         else:
             print("lipschitz distance function not implemented")
             exit()
@@ -236,14 +241,17 @@ class Solver(object):
         module.forward_handle = module.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
 
     def add_lipschitz_regularization(self):
-        self.aux_y = torch.ones((1), device=self.device) * (-1)
+        self.modules_count = 0
+        self.aux_y = torch.ones((1), device=self.device)
         if self.args.level == "model":
+            self.modules_count = 1
             self.model.forward_handle = self.model.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
 
         elif self.args.level == "block":
             if "PreResNet" in self.args.model:
                 for name, module in self.model.named_modules():
                     if re.match(r"^layer[0-9]\.[0-9]+$", name):
+                        self.modules_count += 1
                         module.forward_handle = module.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
 
         elif self.args.level == "layer":
@@ -258,6 +266,7 @@ class Solver(object):
 
 
             for i,module in enumerate(modules):
+                self.modules_count += 1
                 module.forward_handle = module.register_forward_hook(self.forward_lipschitz_loss_hook_fn)
 
 
@@ -277,7 +286,8 @@ class Solver(object):
             loss = self.criterion(output, target)
             
             if self.args.lipschitz_regularization:
-                loss += self.lipschitz_loss * self.args.lipschitz_regularization_factor
+                self.lipschitz_loss = (self.lipschitz_loss * self.args.lipschitz_regularization_loss_factor)/self.modules_count
+                loss += self.lipschitz_loss
             
             if self.args.half:
                 with amp.scale_loss(loss, self.optimizer) as scaled_loss:
@@ -289,7 +299,7 @@ class Solver(object):
 
             batch_idx = self.get_batch_plot_idx()
             self.writer.add_scalar("Train/Batch Loss", loss.item(), batch_idx)
-            self.writer.add_scalar("Train/Lipschitz Batch Loss", self.lipschitz_loss.item(), batch_idx)
+            self.writer.add_scalar("Train/Lipschitz Batch Loss", self.lipschitz_loss.item(), batch_idx) # TODO the loss values suck, they are either ~1.0 or ~0.0
 
             prediction = torch.max(output, 1)
             total += target.size(0)
@@ -350,6 +360,8 @@ class Solver(object):
         best_accuracy = 0
         try:
             for epoch in range(1, self.args.epoch + 1):
+                if epoch in self.args.lipschitz_noise_factor_milestines:
+                    self.args.lipschitz_noise_factor *= self.args.lipschitz_noise_factor_gamma
                 print("\n===> epoch: %d/%d" % (epoch, self.args.epoch))
 
                 train_result = self.train()
@@ -368,6 +380,7 @@ class Solver(object):
 
                 self.writer.add_scalar("Model/Norm", self.get_model_norm(), epoch)
                 self.writer.add_scalar("Train Params/Learning rate", self.scheduler.get_last_lr()[0], epoch)
+                self.writer.add_scalar("Train Params/Lipschitz noise factor", self.args.lipschitz_noise_factor, epoch)
 
                 if best_accuracy < test_result[1]:
                     best_accuracy = test_result[1]

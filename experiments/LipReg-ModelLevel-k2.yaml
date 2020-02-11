@@ -32,7 +32,10 @@ seed:
 progress_bar: True
 
 lipschitz_regularization: True
-lipschitz_regularization_factor: 0.1
+lipschitz_regularization_loss_factor: 1.0
+lipschitz_noise_factor: 0.1
+lipschitz_noise_factor_gamma: 1.25
+lipschitz_noise_factor_milestines: [30,60,90,120,150,190]
 distance_function: "nll"
 level: "model"
 lipschitz_k_inputs: 2
