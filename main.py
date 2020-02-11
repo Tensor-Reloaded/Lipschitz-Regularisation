@@ -39,7 +39,6 @@ try:
 except ImportError:
     from yaml import Loader, Dumper
 
-
 def yaml_dict_to_params(config):
     """ Transforms a config dict {'a': 'b', ...} to an object such that params.a == 'b' """
 
@@ -211,7 +210,7 @@ class Solver(object):
 
 
     def forward_lipschitz_loss_hook_fn(self,module,X,y):
-        if not self.model.training  or not self.args.lipschitz_regularization:
+        if not self.model.training  or not self.args.lipschitz_regularization or not hasattr(module,'weight'):
             return
         module.eval()
         
@@ -229,11 +228,11 @@ class Solver(object):
                 self.lipschitz_loss = F.cosine_embedding_loss(X,y,self.aux_y)
             else:
                 self.lipschitz_loss += F.cosine_embedding_loss(X,y,self.aux_y)
-        elif self.args.distance_function == "l2":
+        elif self.args.distance_function == "mse":
             if self.lipschitz_loss is None:
-                self.lipschitz_loss = torch.dist(X,y,p=2)
+                self.lipschitz_loss = F.mse_loss(X,y)
             else:
-                self.lipschitz_loss += torch.dist(X,y,p=2)
+                self.lipschitz_loss += F.mse_loss(X,y)
         else:
             print("lipschitz distance function not implemented")
             exit()
