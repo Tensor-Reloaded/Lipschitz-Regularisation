@@ -29,7 +29,7 @@ all_metrics: False
 cuda: True
 cuda_device: 0
 seed:
-progress_bar: True
+progress_bar: False
 
 lipschitz_regularization: True
 lipschitz_regularization_loss_factor: 1.0
