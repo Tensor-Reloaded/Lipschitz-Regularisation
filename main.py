@@ -210,7 +210,7 @@ class Solver(object):
 
 
     def forward_lipschitz_loss_hook_fn(self,module,X,y):
-        if not self.model.training  or not self.args.lipschitz_regularization or not hasattr(module,'weight'):
+        if not self.model.training  or not self.args.lipschitz_regularization or (self.args.level == "layer" and not hasattr(module,'weight')):
             return
         module.eval()
         
@@ -280,6 +280,7 @@ class Solver(object):
             data, target = data.to(self.device), target.to(self.device)
             self.optimizer.zero_grad()
 
+            self.model.train()
             self.lipschitz_loss = None
             output = self.model(data)
             loss = self.criterion(output, target)
