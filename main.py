@@ -215,12 +215,11 @@ class Solver(object):
         module.eval()
         
         module.forward_handle.remove()
-        # TODO Consider progressively generating bigger and bigger noise, as the model becomes better, increase the requirement of distinguishing noise from input
 
         X = X[0]
         y = module(X)
         noise = self.args.lipschitz_noise_factor * torch.std(X, dim=0) * torch.randn(X.size(), device=self.device) 
-        X = X + noise  # TODO think about how to generate this noise so that it is properly scaled to X, consider to use VAE for it
+        X = X + noise
         X = module(X)
 
         if self.args.distance_function == "cosine_loss":
@@ -233,6 +232,11 @@ class Solver(object):
                 self.lipschitz_loss = F.mse_loss(X,y)
             else:
                 self.lipschitz_loss += F.mse_loss(X,y)
+        elif self.args.distance_function == "nll":
+            if self.lipschitz_loss is None:
+                self.lipschitz_loss =  (-F.softmax(y)+F.softmax(X).exp().sum(0).log()).mean()
+            else:
+                self.lipschitz_loss += (-F.softmax(y)+F.softmax(X).exp().sum(0).log()).mean()
         else:
             print("lipschitz distance function not implemented")
             exit()
